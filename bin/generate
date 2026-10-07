@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Usage: generate API_JSON MODULE PREFIX OUT_DIR [--check-against-gem]
+#   generate apis/sts/2011-06-15/api-2.json STS aws-sdk-sts ../spinel-aws-sdk-core
+# Writes PREFIX.rb and PREFIX/*.rb under OUT_DIR. With --check-against-gem it
+# first loads the real aws-sdk-core gem and fails unless every structure's
+# member names match the gem's ClientApi, so generated names are the gem's.
+require_relative '../lib/codegen/query_service'
+require 'fileutils'
+
+api, mod, prefix, out, flag = ARGV
+abort File.read(__FILE__).lines.grep(/^#   |^# Usage/).join unless api && mod && prefix && out
+
+service = Codegen::QueryService.new(api, module_name: mod)
+
+if flag == '--check-against-gem'
+  require 'aws-sdk-core'
+  client_api = Aws.const_get(mod).const_get(:ClientApi)
+  mismatches = service.member_names.filter_map do |shape, names|
+    gem_shape = client_api.const_get(shape)
+    gem_names = gem_shape.member_names.map(&:to_s)
+    "#{shape}: #{names.inspect} vs gem #{gem_names.inspect}" unless names == gem_names
+  end
+  abort "member names differ from the gem:\n#{mismatches.join("\n")}" unless mismatches.empty?
+  warn "names match the gem's ClientApi for #{service.member_names.size} structures"
+end
+
+service.files(prefix).each do |path, content|
+  target = File.join(out, path)
+  FileUtils.mkdir_p(File.dirname(target))
+  File.write(target, content)
+  warn "wrote #{target}"
+end
