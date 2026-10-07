@@ -1,0 +1,6 @@
+AWS SDK for Ruby
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+lib/codegen/underscore.rb is ported from aws-sdk-ruby,
+build_tools/aws-sdk-code-generator/lib/aws-sdk-code-generator/underscore.rb,
+at 1113d9b05fdf26bbf147e4c4936a9e446ae27ad5.

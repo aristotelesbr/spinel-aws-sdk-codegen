@@ -6,7 +6,7 @@ aws-sdk-ruby gem is generated from. One method per operation serializes the
 request and parses the response field by field, so nothing walks a model at
 run time and Spinel compiles every line.
 
-Runs under CRuby only. It is a build tool, not a package, and is not published.
+Runs under CRuby only. It is a build tool, not a spin package.
 
 ## Usage
 
@@ -38,3 +38,7 @@ ships from.
 `lib/codegen/underscore.rb` is ported from aws-sdk-ruby (Apache-2.0),
 `build_tools/aws-sdk-code-generator`, so model names become the gem's Ruby
 names.
+
+## License
+
+Apache-2.0, as aws-sdk-ruby. See `LICENSE` and `NOTICE`.
