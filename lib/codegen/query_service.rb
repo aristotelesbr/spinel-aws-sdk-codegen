@@ -404,10 +404,19 @@ module Codegen
       out << "  stub = next_stub(:#{m})\n"
       out << "  if stub.nil? && stub_responses?\n    data = Stubs.#{m}(nil)\n"
       out << "  elsif stub && stub.data?\n    data = Stubs.#{m}(stub.data)\n"
-      out << "  else\n    xml = stub ? stub_xml(stub, body) : send_query(body)\n    data = Parsers.#{m}(xml)\n  end\n"
+      out << "  else\n    xml = stub ? stub_xml(stub, body) : send_query(body, #{signed?(op)})\n    data = Parsers.#{m}(xml)\n  end\n"
       out << "  Responses::#{name}.new(data, request_context(body))\n"
       out << "rescue Aws::Runtime::ErrorResponse => e\n"
       out << "  raise Errors.error(e.code, e.context, e.message)\nend\n"
+    end
+
+    # An operation the model marks as unauthenticated (authtype "none", or
+    # only smithy.api#noAuth) is sent unsigned, as the gem does.
+    def signed?(op)
+      return false if op['authtype'] == 'none'
+
+      auth = op['auth']
+      !(auth.is_a?(Array) && auth == ['smithy.api#noAuth'])
     end
 
     def response_class(name, op)
