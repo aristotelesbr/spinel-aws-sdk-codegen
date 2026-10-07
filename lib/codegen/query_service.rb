@@ -382,8 +382,9 @@ module Codegen
       responses = operations.map { |name, op| response_class(name, op) }.join("\n")
       body = +"class Client < Aws::Runtime::Client\n"
       body << "  ENDPOINT_PREFIX = #{metadata['endpointPrefix'].inspect}\n"
-      body << "  SIGNING_NAME = #{(metadata['signingName'] || metadata['endpointPrefix']).inspect}\n\n"
-      body << "  def initialize(options = {})\n    super(options, ENDPOINT_PREFIX, SIGNING_NAME)\n  end\n\n"
+      body << "  SIGNING_NAME = #{(metadata['signingName'] || metadata['endpointPrefix']).inspect}\n"
+      body << "  SERVICE_ID = #{(metadata['serviceId'] || metadata['endpointPrefix']).inspect}\n\n"
+      body << "  def initialize(options = {})\n    super(options, ENDPOINT_PREFIX, SIGNING_NAME, SERVICE_ID)\n  end\n\n"
       inputs = operations.map do |name, op|
         input = op.dig('input', 'shape')
         names = input ? members(shape(input)).map { |m| ":#{m[:ruby]}" }.join(', ') : ''
