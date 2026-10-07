@@ -2,6 +2,7 @@
 
 require 'json'
 require_relative 'underscore'
+require_relative 'common_errors'
 
 module Codegen
   # Writes explicit Ruby for one AWS "query" protocol service (such as STS)
@@ -129,7 +130,8 @@ module Codegen
     def errors_file
       classes = errors.keys.map { |name| "class #{name} < ServiceError\nend\n" }.join("\n")
       aliases = error_code_aliases.map { |name| "class #{name} < ServiceError\nend\n" }.join("\n")
-      names = errors.keys + error_code_aliases
+      common = common_error_codes.map { |name| "class #{name} < ServiceError\nend\n" }.join("\n")
+      names = errors.keys + error_code_aliases + common_error_codes
       lookup = names.map { |name| "when #{name.inspect} then #{name}.new(context, message, Aws::EmptyStructure.new, constant)\n" }.join
       body = +"module Errors\n"
       body << "  # The service's own base error, so `rescue Aws::#{module_name}::Errors::ServiceError`\n"
@@ -141,6 +143,9 @@ module Codegen
         body << "  # the raised class after the code (DynamicErrors), so these exist too.\n"
         body << indent(aliases, 2) << "\n"
       end
+      body << "  # Error codes any AWS service may return without its model listing\n"
+      body << "  # them; the gem creates their classes when it first sees the code.\n"
+      body << indent(common, 2) << "\n"
       body << "  # The class for a code, named as the gem's DynamicErrors#error_class\n"
       body << "  # names it; a code the model does not list gets ServiceError.\n"
       body << "  def self.error(code, context, message)\n"
@@ -156,6 +161,10 @@ module Codegen
         code = shape.dig('error', 'code')
         code if code && code != name && !errors.key?(code)
       end.uniq.sort
+    end
+
+    def common_error_codes
+      CommonErrors::ALL - errors.keys - error_code_aliases
     end
 
     # ---- serializers ----------------------------------------------------
@@ -396,7 +405,7 @@ module Codegen
       out << "  if stub.nil? && stub_responses?\n    data = Stubs.#{m}(nil)\n"
       out << "  elsif stub && stub.data?\n    data = Stubs.#{m}(stub.data)\n"
       out << "  else\n    xml = stub ? stub_xml(stub, body) : send_query(body)\n    data = Parsers.#{m}(xml)\n  end\n"
-      out << "  Responses::#{name}.new(data, body, @retries)\n"
+      out << "  Responses::#{name}.new(data, request_context(body))\n"
       out << "rescue Aws::Runtime::ErrorResponse => e\n"
       out << "  raise Errors.error(e.code, e.context, e.message)\nend\n"
     end
