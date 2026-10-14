@@ -1,21 +1,39 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Usage: generate API_JSON MODULE PREFIX OUT_DIR [--check-against-gem]
+# Usage: generate API_JSON MODULE PREFIX OUT_DIR [--operations A,B] [--check-against-gem]
 #   generate apis/sts/2011-06-15/api-2.json STS aws-sdk-sts ../spinel-aws-sdk-core
-# Writes PREFIX.rb and PREFIX/*.rb under OUT_DIR. With --check-against-gem it
-# first loads the real aws-sdk-core gem and fails unless every structure's
-# member names match the gem's ClientApi, so generated names are the gem's.
+#   generate apis/ssm/2014-11-06/api-2.json SSM aws-sdk-ssm ../spinel-aws-sdk-ssm --operations GetParameter,PutParameter
+# Writes PREFIX.rb and PREFIX/*.rb under OUT_DIR, for the protocol the model
+# names. --operations keeps only those operations, the structures they reach
+# and their errors. With --check-against-gem it first loads the real gem and
+# fails unless every structure's member names match the gem's ClientApi, so
+# generated names are the gem's.
 require_relative '../lib/codegen/query_service'
+require_relative '../lib/codegen/json_service'
 require 'fileutils'
 
-api, mod, prefix, out, flag = ARGV
+# The gem a service's ClientApi lives in, when it is not PREFIX itself.
+GEMS = { 'aws-sdk-sts' => 'aws-sdk-core' }.freeze
+
+args = ARGV.dup
+check = args.delete('--check-against-gem')
+operation_names = nil
+if (i = args.index('--operations'))
+  operation_names = args.delete_at(i + 1).to_s.split(',')
+  args.delete_at(i)
+end
+api, mod, prefix, out = args
 abort File.read(__FILE__).lines.grep(/^#   |^# Usage/).join unless api && mod && prefix && out
 
-service = Codegen::QueryService.new(api, module_name: mod)
+protocol = JSON.parse(File.read(api))['metadata']['protocol']
+generator = { 'query' => Codegen::QueryService, 'json' => Codegen::JsonService }.fetch(protocol) do
+  abort "unsupported protocol: #{protocol}"
+end
+service = generator.new(api, module_name: mod, operation_names: operation_names, in_core: GEMS[prefix] == 'aws-sdk-core')
 
-if flag == '--check-against-gem'
-  require 'aws-sdk-core'
+if check
+  require GEMS.fetch(prefix, prefix)
   client_api = Aws.const_get(mod).const_get(:ClientApi)
   mismatches = service.member_names.filter_map do |shape, names|
     gem_shape = client_api.const_get(shape)

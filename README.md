@@ -1,7 +1,7 @@
 # spinel-aws-sdk-codegen
 
-Writes the Spinel packages' service clients (first `Aws::STS`, inside
-aws-sdk-core) as plain, explicit Ruby, from the same `api-2.json` model the
+Writes the Spinel packages' service clients (`Aws::STS` inside
+aws-sdk-core, and `Aws::SSM`) as plain, explicit Ruby, from the same `api-2.json` model the
 aws-sdk-ruby gem is generated from. One method per operation serializes the
 request and parses the response field by field, so nothing walks a model at
 run time and Spinel compiles every line.
@@ -11,27 +11,37 @@ Runs under CRuby only. It is a build tool, not a spin package.
 ## Usage
 
 ```sh
-bin/generate API_JSON MODULE PREFIX OUT_DIR [--check-against-gem]
+bin/generate API_JSON MODULE PREFIX OUT_DIR [--operations A,B] [--check-against-gem]
 
 # STS, into the aws-sdk-core package
 bin/generate ../spinel-aws-notes/upstream/aws-sdk-ruby-apis/sts/2011-06-15/api-2.json \
   STS aws-sdk-sts ../spinel-aws-sdk-core --check-against-gem
+
+# SSM's Parameter Store operations, into the aws-sdk-ssm package
+bin/generate ../spinel-aws-notes/upstream/aws-sdk-ruby-apis/ssm/2014-11-06/api-2.json \
+  SSM aws-sdk-ssm ../spinel-aws-sdk-ssm --check-against-gem \
+  --operations GetParameter,GetParameters,GetParametersByPath,PutParameter,DeleteParameter,DeleteParameters,DescribeParameters
 ```
 
 It writes `PREFIX.rb` and `PREFIX/{types,errors,serializers,parsers,stubs,client}.rb`
 under `OUT_DIR`. The output is deterministic: the same model gives the same
-files.
+files. `--operations` keeps only those operations, the structures they reach
+and their errors. A `paginators-1.json` next to the model clears the paging
+tokens of the default stubs, as the gem does.
 
-`--check-against-gem` first loads the real aws-sdk-core gem and stops unless
+`--check-against-gem` first loads the real gem (aws-sdk-core for STS,
+aws-sdk-PREFIX otherwise) and stops unless
 every structure's member names match the gem's `ClientApi`, so the generated
 names are the gem's. It needs the gem installed in the Ruby that runs the
 generator.
 
 ## Scope
 
-Only the `query` protocol (STS). The model is read from aws-sdk-ruby at
+The `query` protocol (STS) and the `json` protocol (SSM); the model's
+protocol picks the generator. Unions (the gem adds an `unknown` member) and
+document shapes are not supported yet. The models are read from aws-sdk-ruby at
 `1113d9b05fdf26bbf147e4c4936a9e446ae27ad5`, the commit aws-sdk-core 3.257.0
-ships from.
+and aws-sdk-ssm 1.223.0 ship from.
 
 ## Provenance
 

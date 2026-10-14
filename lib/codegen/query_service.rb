@@ -6,7 +6,7 @@ module Codegen
   # The "query" protocol (such as STS): a form-encoded body of Action,
   # Version and the input members, and an XML response.
   class QueryService < Service
-    def initialize(api_path, module_name:)
+    def initialize(api_path, module_name:, operation_names: nil, in_core: false)
       super
       raise "not a query protocol model: #{metadata['protocol']}" unless metadata['protocol'] == 'query'
     end

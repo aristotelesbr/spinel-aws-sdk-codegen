@@ -16,10 +16,20 @@ module Codegen
 
     attr_reader :module_name, :api
 
-    def initialize(api_path, module_name:)
+    # With operation_names, only those operations, the structures they reach
+    # and their errors are generated; without, the whole model. A service
+    # inside the aws-sdk-core package (STS) loads only the runtime; any other
+    # loads aws-sdk-core, as the gem does.
+    def initialize(api_path, module_name:, operation_names: nil, in_core: false)
       @api = JSON.parse(File.read(api_path))
       @module_name = module_name
       @shapes = @api['shapes']
+      @operation_names = operation_names
+      @in_core = in_core
+      pagers = File.join(File.dirname(api_path), 'paginators-1.json')
+      @paginators = File.exist?(pagers) ? JSON.parse(File.read(pagers))['pagination'] : {}
+      unknown = (operation_names || []) - @api['operations'].keys
+      raise "not in the model: #{unknown.join(', ')}" unless unknown.empty?
     end
 
     def metadata = @api['metadata']
@@ -47,10 +57,19 @@ module Codegen
 
     # ---- model helpers -------------------------------------------------
 
-    def operations = @api['operations'].sort.to_h
+    def operations
+      ops = @api['operations']
+      ops = ops.slice(*@operation_names) if @operation_names
+      ops.sort.to_h
+    end
 
     def structures
-      @shapes.select { |_, s| s['type'] == 'structure' }.sort.to_h
+      all = @shapes.select { |_, s| s['type'] == 'structure' }
+      return all.sort.to_h unless @operation_names
+
+      roots = operations.values.flat_map { |op| [op.dig('input', 'shape'), op.dig('output', 'shape')] }.compact
+      names = reachable_structures(roots.uniq) | errors.keys
+      all.slice(*names).sort.to_h
     end
 
     def shape(name) = @shapes.fetch(name)
@@ -71,7 +90,11 @@ module Codegen
     def op_method(op_name) = Underscore.underscore(op_name)
 
     def errors
-      @shapes.select { |_, s| s['exception'] }.sort.to_h
+      all = @shapes.select { |_, s| s['exception'] }
+      return all.sort.to_h unless @operation_names
+
+      names = operations.values.flat_map { |op| (op['errors'] || []).map { |e| e['shape'] } }
+      all.slice(*names).sort.to_h
     end
 
     def header(requires = [])
@@ -108,7 +131,7 @@ module Codegen
 
     def entry_file(prefix)
       req = %w[types errors serializers parsers stubs client].map { |f| "#{prefix}/#{f}" }
-      header(['aws-sdk-core/runtime'] + req) +
+      header([@in_core ? 'aws-sdk-core/runtime' : 'aws-sdk-core'] + req) +
         "module Aws\n  module #{module_name}\n    API_VERSION = #{metadata['apiVersion'].inspect}\n  end\nend\n"
     end
 
@@ -190,7 +213,8 @@ module Codegen
       reachable = reachable_structures(outputs)
       ops = operations.map { |name, op| stub_operation(name, op) }.join("\n")
       defaults = reachable.map { |name| stub_default(name) }.join("\n")
-      builders = reachable.map { |name| stub_from_hash(name) }.join("\n")
+      builders = (reachable.map { |name| stub_from_hash(name) } +
+                  structure_lists(reachable).map { |name| stub_from_hash_list(name) }).join("\n")
       body = "module Stubs\n#{indent(ops, 2)}\n#{indent(defaults, 2)}\n#{indent(builders, 2)}end\n"
       header + wrap(indent(body, 4))
     end
@@ -201,7 +225,26 @@ module Codegen
       return "def self.#{op_method(name)}(data)\n  Aws::EmptyStructure.new\nend\n" unless output
 
       u = Underscore.underscore(output)
-      "def self.#{op_method(name)}(data)\n  data.nil? ? default_#{u}([]) : from_hash_#{u}(data)\nend\n"
+      cleared = paging_members(name)
+      return "def self.#{op_method(name)}(data)\n  data.nil? ? default_#{u}([]) : from_hash_#{u}(data)\nend\n" if cleared.empty?
+
+      out = +"def self.#{op_method(name)}(data)\n  return from_hash_#{u}(data) unless data.nil?\n\n"
+      out << "  stub = default_#{u}([])\n"
+      cleared.each { |member, value| out << "  stub.#{member} = #{value}\n" }
+      out << "  stub\nend\n"
+    end
+
+    # The gem's StubData#remove_paging_tokens: a default stub has no next
+    # page, so each top-level output token is nil and more_results false.
+    def paging_members(op_name)
+      pager = @paginators[op_name]
+      return [] if pager.nil?
+
+      tokens = Array(pager['output_token']).map { |path| path.split(/ \|\| | or /).first }
+      cleared = tokens.reject { |path| path.include?('.') }.map { |path| [Underscore.underscore(path), 'nil'] }
+      more = pager['more_results']
+      cleared << [Underscore.underscore(more), 'false'] if more && !more.include?('.')
+      cleared
     end
 
     # As Aws::Stubbing::EmptyStub: a String is its shape's name, a number 0,
@@ -240,17 +283,29 @@ module Codegen
       out << "\n  )\nend\n"
     end
 
+    # The list shapes of structures that the given structures' members use.
+    def structure_lists(structure_names)
+      structure_names.flat_map do |name|
+        members(shape(name)).select do |m|
+          m[:shape]['type'] == 'list' && shape(m[:shape]['member']['shape'])['type'] == 'structure'
+        end.map { |m| m[:shape_name] }
+      end.uniq.sort
+    end
+
+    # A list given as nil stays nil, as in the gem's stub data.
+    def stub_from_hash_list(name)
+      item = Underscore.underscore(shape(name)['member']['shape'])
+      "def self.from_hash_#{Underscore.underscore(name)}(values)\n  return nil if values.nil?\n\n" \
+        "  values.map { |item| from_hash_#{item}(item) }\nend\n"
+    end
+
     def stub_hash_value(m)
       fetch = "Aws::Runtime::Query.member(hash, :#{m[:ruby]})"
       case m[:shape]['type']
       when 'structure' then "from_hash_#{Underscore.underscore(m[:shape_name])}(#{fetch})"
       when 'list'
-        item = shape(m[:shape]['member']['shape'])
-        if item['type'] == 'structure'
-          "Aws::Runtime::Query.list(#{fetch}).map { |item| from_hash_#{Underscore.underscore(m[:shape]['member']['shape'])}(item) }"
-        else
-          "Aws::Runtime::Query.list(#{fetch})"
-        end
+        item = m[:shape]['member']['shape']
+        shape(item)['type'] == 'structure' ? "from_hash_#{Underscore.underscore(m[:shape_name])}(#{fetch})" : fetch
       else fetch
       end
     end
