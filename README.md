@@ -44,7 +44,10 @@ The `query` protocol (STS) and the `json` protocol (SSM); the model's
 protocol picks the generator. A union is generated as the gem's: its
 members plus `unknown`, `member` and `value`, and a subclass per member
 (`NodeType::Instance`) for what a response or a stub gives; unions are
-generated for the `json` protocol only. Document shapes are not supported
+generated for the `json` protocol only. For the `json` protocol an error's
+`data` is parsed as the gem's `Json::ErrorHandler` does: the modeled error the
+code names, when the operation lists it, with a reader per member on the
+error class. Document shapes are not supported
 yet. The models are read from aws-sdk-ruby at
 `1113d9b05fdf26bbf147e4c4936a9e446ae27ad5`, the commit aws-sdk-core 3.257.0
 and aws-sdk-ssm 1.223.0 ship from.

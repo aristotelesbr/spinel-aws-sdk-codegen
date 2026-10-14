@@ -201,11 +201,12 @@ module Codegen
     # ---- errors ---------------------------------------------------------
 
     def errors_file
-      classes = errors.keys.map { |name| "class #{name} < ServiceError\nend\n" }.join("\n")
+      classes = errors.map { |name, shape| error_class(name, shape) }.join("\n")
       aliases = error_code_aliases.map { |name| "class #{name} < ServiceError\nend\n" }.join("\n")
       common = common_error_codes.map { |name| "class #{name} < ServiceError\nend\n" }.join("\n")
       names = errors.keys + error_code_aliases + common_error_codes
-      lookup = names.map { |name| "when #{name.inspect} then #{name}.new(context, message, Aws::EmptyStructure.new, constant)\n" }.join
+      data = error_data? ? 'data' : 'Aws::EmptyStructure.new'
+      lookup = names.map { |name| "when #{name.inspect} then #{name}.new(context, message, #{data}, constant)\n" }.join
       body = +"module Errors\n"
       body << "  # The service's own base error, so `rescue Aws::#{module_name}::Errors::ServiceError`\n"
       body << "  # catches every error of this service, as in the gem.\n"
@@ -221,12 +222,25 @@ module Codegen
       body << indent(common, 2) << "\n"
       body << "  # The class for a code, named as the gem's DynamicErrors#error_class\n"
       body << "  # names it; a code the model does not list gets ServiceError.\n"
-      body << "  def self.error(code, context, message)\n"
+      body << "  def self.error(code, context, message#{', data = Aws::EmptyStructure.new' if error_data?})\n"
       body << "    constant = Aws::Runtime.error_constant(code)\n"
-      body << "    case constant\n#{indent(lookup, 4)}    else ServiceError.new(context, message, Aws::EmptyStructure.new, constant)\n    end\n  end\n"
+      body << "    case constant\n#{indent(lookup, 4)}    else ServiceError.new(context, message, #{data}, constant)\n    end\n  end\n"
       body << "end\n"
       header + wrap(indent(body, 4))
     end
+
+    # A modeled error's class; with error data, a reader for each member of
+    # its shape but message, as the gem's error classes (whose message reader
+    # answers the same as ServiceError#message).
+    def error_class(name, shape)
+      readers = error_data? ? members(shape).reject { |m| m[:ruby] == 'message' } : []
+      body = readers.map { |m| "  def #{m[:ruby]} = @data.#{m[:ruby]}\n" }.join
+      "class #{name} < ServiceError\n#{body}end\n"
+    end
+
+    # Whether a protocol parses an error's data from its body (the json one
+    # does); without, every error's data is an empty structure.
+    def error_data? = false
 
     # The model's error codes that differ from their shape's name.
     def error_code_aliases
@@ -389,7 +403,8 @@ module Codegen
       out << "  else\n#{indent(transport(name, op), 4)}  end\n"
       out << "  Responses::#{name}.new(data, request_context(body))\n"
       out << "rescue Aws::Runtime::ErrorResponse => e\n"
-      out << "  raise Errors.error(e.code, e.context, e.message)\nend\n"
+      data = error_data? ? ", Parsers.#{m}_error_data(e.code, e.body)" : ''
+      out << "  raise Errors.error(e.code, e.context, e.message#{data})\nend\n"
     end
 
     # An operation the model marks as unauthenticated (authtype "none", or

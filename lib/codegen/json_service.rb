@@ -14,6 +14,8 @@ module Codegen
 
     private
 
+    def error_data? = true
+
     def client_constants
       "  JSON_VERSION = #{metadata['jsonVersion'].inspect}\n  TARGET_PREFIX = #{metadata['targetPrefix'].inspect}\n"
     end
@@ -95,8 +97,9 @@ module Codegen
 
     def parsers_file
       outputs = operations.filter_map { |_, op| op.dig('output', 'shape') }.uniq
-      ops = operations.map { |name, op| parse_operation(name, op) }.join("\n")
-      helpers = reachable_shapes(outputs).map { |name| parse_shape(name) }.join("\n")
+      roots = outputs | operations.values.flat_map { |op| data_errors(op) }
+      ops = operations.map { |name, op| parse_operation(name, op) + "\n" + parse_error_data(name, op) }.join("\n")
+      helpers = reachable_shapes(roots).map { |name| parse_shape(name) }.join("\n")
       body = "module Parsers\n#{indent(ops, 2)}\n#{indent(helpers, 2)}end\n"
       header(['json']) + wrap(indent(body, 4))
     end
@@ -108,6 +111,26 @@ module Codegen
 
       "def self.#{op_method(name)}(json)\n" \
         "  parse_#{Underscore.underscore(output)}(JSON.parse(json.empty? ? '{}' : json))\nend\n"
+    end
+
+    # The operation's modeled errors whose shape has members: the ones
+    # Json::ErrorHandler#parse_error_data parses a body into.
+    def data_errors(op)
+      (op['errors'] || []).map { |e| e['shape'] }.uniq.select { |name| members(shape(name)).any? }.sort
+    end
+
+    # Json::ErrorHandler#parse_error_data: the body parsed as the modeled
+    # error the code names, when the operation lists it; otherwise, or when
+    # the body is not a JSON object, an empty structure.
+    def parse_error_data(name, op)
+      out = +"def self.#{op_method(name)}_error_data(code, body)\n"
+      names = data_errors(op)
+      return out << "  Aws::EmptyStructure.new\nend\n" if names.empty?
+
+      out << "  value = Aws::Runtime::Json.error_body(body)\n  return Aws::EmptyStructure.new if value.nil?\n\n"
+      out << "  case Aws::Runtime::Json.error_shape_name(code)\n"
+      names.each { |n| out << "  when #{n.inspect} then parse_#{Underscore.underscore(n)}(value)\n" }
+      out << "  else Aws::EmptyStructure.new\n  end\nend\n"
     end
 
     # Each value is converted where it is read, so what JSON.parse returns
