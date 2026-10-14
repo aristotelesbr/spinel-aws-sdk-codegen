@@ -118,9 +118,8 @@ module Codegen
       case s['type']
       when 'structure'
         ms = members(s)
-        out << "  Types::#{name}.new(\n"
-        out << ms.map { |m| "    #{m[:ruby]}: #{parse_value(m[:shape_name], "value[#{m[:location_name].inspect}]")}" }.join(",\n")
-        out << "\n  )\n"
+        values = ms.map { |m| parse_value(m[:shape_name], "value[#{m[:location_name].inspect}]") }
+        out << construct(name, values, "Aws::Runtime::Json.union_unknown(value, #{ms.map { |m| m[:location_name] }.inspect})")
       when 'list'
         out << "  value.map { |item| #{parse_value(s['member']['shape'], 'item')} }\n"
       when 'map'

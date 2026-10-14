@@ -9,6 +9,7 @@ module Codegen
     def initialize(api_path, module_name:, operation_names: nil, in_core: false)
       super
       raise "not a query protocol model: #{metadata['protocol']}" unless metadata['protocol'] == 'query'
+      raise 'unions are generated for the json protocol only' if structures.any? { |_, s| union?(s) }
     end
 
     private

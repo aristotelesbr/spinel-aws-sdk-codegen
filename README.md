@@ -17,10 +17,13 @@ bin/generate API_JSON MODULE PREFIX OUT_DIR [--operations A,B] [--check-against-
 bin/generate ../spinel-aws-notes/upstream/aws-sdk-ruby-apis/sts/2011-06-15/api-2.json \
   STS aws-sdk-sts ../spinel-aws-sdk-core --check-against-gem
 
-# SSM's Parameter Store operations, into the aws-sdk-ssm package
+# SSM, into the aws-sdk-ssm package
 bin/generate ../spinel-aws-notes/upstream/aws-sdk-ruby-apis/ssm/2014-11-06/api-2.json \
-  SSM aws-sdk-ssm ../spinel-aws-sdk-ssm --check-against-gem \
-  --operations GetParameter,GetParameters,GetParametersByPath,PutParameter,DeleteParameter,DeleteParameters,DescribeParameters
+  SSM aws-sdk-ssm ../spinel-aws-sdk-ssm --check-against-gem
+
+# only some operations, the structures they reach and their errors
+bin/generate ../spinel-aws-notes/upstream/aws-sdk-ruby-apis/ssm/2014-11-06/api-2.json \
+  SSM aws-sdk-ssm OUT_DIR --operations GetParameter,PutParameter
 ```
 
 It writes `PREFIX.rb` and `PREFIX/{types,errors,serializers,parsers,stubs,client}.rb`
@@ -38,8 +41,11 @@ generator.
 ## Scope
 
 The `query` protocol (STS) and the `json` protocol (SSM); the model's
-protocol picks the generator. Unions (the gem adds an `unknown` member) and
-document shapes are not supported yet. The models are read from aws-sdk-ruby at
+protocol picks the generator. A union is generated as the gem's: its
+members plus `unknown`, `member` and `value`, and a subclass per member
+(`NodeType::Instance`) for what a response or a stub gives; unions are
+generated for the `json` protocol only. Document shapes are not supported
+yet. The models are read from aws-sdk-ruby at
 `1113d9b05fdf26bbf147e4c4936a9e446ae27ad5`, the commit aws-sdk-core 3.257.0
 and aws-sdk-ssm 1.223.0 ship from.
 

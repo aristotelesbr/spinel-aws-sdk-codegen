@@ -50,7 +50,10 @@ module Codegen
     # Every [shape name, ruby member names in model order] the generator
     # emits, for checking against the gem's own ClientApi.
     def member_names
-      structures.to_h { |name, shape| [name, members(shape).map { |m| m[:ruby] }] }
+      structures.to_h do |name, shape|
+        names = members(shape).map { |m| m[:ruby] }
+        [name, union?(shape) ? names + ['unknown'] : names]
+      end
     end
 
     private
@@ -73,6 +76,8 @@ module Codegen
     end
 
     def shape(name) = @shapes.fetch(name)
+
+    def union?(shape) = shape['union'] == true
 
     def members(shape)
       (shape['members'] || {}).map do |wire, ref|
@@ -143,6 +148,8 @@ module Codegen
     end
 
     def type_class(name, shape)
+      return union_class(name, shape) if union?(shape)
+
       ms = members(shape)
       args = ms.map { |m| "#{m[:ruby]}: nil" }.join(', ')
       assigns = ms.map { |m| "  @#{m[:ruby]} = #{m[:ruby]}\n" }.join
@@ -152,6 +159,33 @@ module Codegen
       out << "  def initialize(#{args})\n#{indent(assigns, 2)}  end\n\n"
       out << "  def to_h\n    hash = {}\n#{indent(to_h, 2)}    hash\n  end\nend\n"
       out
+    end
+
+    # A union as the gem's: its members and unknown, Aws::Structure::Union's
+    # member and value, and a subclass per member (NodeType::Instance) that
+    # a parsed or stubbed value is. from_members gives that subclass for the
+    # first member set, in the model's order and unknown last, as the gem's
+    # parsers pick it; with none set it raises what the gem raises then.
+    def union_class(name, shape)
+      ms = members(shape)
+      names = ms.map { |m| m[:ruby] } + ['unknown']
+      to_h = ms.map { |m| "  hash[:#{m[:ruby]}] = #{to_h_value(m)} unless @#{m[:ruby]}.nil?\n" }.join
+      to_h << "  hash[:unknown] = @unknown unless @unknown.nil?\n"
+      member = names.map { |n| "  return :#{n} unless @#{n}.nil?\n" }.join
+      value = names.map { |n| "  when :#{n} then @#{n}\n" }.join
+      pick = ms.map { |m| "  return #{m[:wire]}.new(#{m[:ruby]}: #{m[:ruby]}) unless #{m[:ruby]}.nil?\n" }.join
+      pick << "  return Unknown.new(unknown: unknown) unless unknown.nil?\n\n"
+      pick << "  raise NoMethodError, \"undefined method 'new' for nil\"\n"
+      out = +"class #{name}\n"
+      out << "  attr_accessor #{names.map { |n| ":#{n}" }.join(', ')}\n\n"
+      out << "  def initialize(#{names.map { |n| "#{n}: nil" }.join(', ')})\n"
+      out << names.map { |n| "    @#{n} = #{n}\n" }.join << "  end\n\n"
+      out << "  def self.from_members(#{names.join(', ')})\n#{indent(pick, 2)}  end\n\n"
+      out << "  def member\n#{indent(member, 2)}    nil\n  end\n\n"
+      out << "  def value\n    case member\n#{indent(value, 2)}    end\n  end\n\n"
+      out << "  def to_h\n    hash = {}\n#{indent(to_h, 2)}    hash\n  end\n\n"
+      out << ms.map { |m| "  class #{m[:wire]} < #{name}\n  end\n" }.join
+      out << "  class Unknown < #{name}\n  end\nend\n"
     end
 
     def to_h_value(m)
@@ -255,9 +289,18 @@ module Codegen
       out = +"def self.default_#{Underscore.underscore(name)}(visited)\n"
       out << "  return nil if visited.include?(#{name.inspect})\n\n"
       out << "  path = visited + [#{name.inspect}]\n" if ms.any? { |m| m[:shape]['type'] == 'structure' }
-      out << "  Types::#{name}.new(\n"
-      out << ms.map { |m| "    #{m[:ruby]}: #{stub_default_value(m)}" }.join(",\n")
-      out << "\n  )\nend\n"
+      out << construct(name, ms.map { |m| stub_default_value(m) }, 'nil')
+      out << "end\n"
+    end
+
+    # "  Types::NAME.new(member: value, ...)\n" for a structure; for a union,
+    # the subclass of the first member set (Types::NAME.from_members), as
+    # the gem's stub of a union comes back from its parser.
+    def construct(name, values, unknown)
+      ms = members(shape(name))
+      return "  Types::#{name}.from_members(\n#{(values + [unknown]).map { |v| "    #{v}" }.join(",\n")}\n  )\n" if union?(shape(name))
+
+      "  Types::#{name}.new(\n#{ms.zip(values).map { |m, v| "    #{m[:ruby]}: #{v}" }.join(",\n")}\n  )\n"
     end
 
     def stub_default_value(m)
@@ -278,9 +321,8 @@ module Codegen
       ms = members(shape(name))
       out = +"def self.from_hash_#{Underscore.underscore(name)}(hash)\n"
       out << "  return nil if hash.nil?\n\n"
-      out << "  Types::#{name}.new(\n"
-      out << ms.map { |m| "    #{m[:ruby]}: #{stub_hash_value(m)}" }.join(",\n")
-      out << "\n  )\nend\n"
+      out << construct(name, ms.map { |m| stub_hash_value(m) }, 'nil')
+      out << "end\n"
     end
 
     # The list shapes of structures that the given structures' members use.
