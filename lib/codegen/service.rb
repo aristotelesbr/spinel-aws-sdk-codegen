@@ -28,6 +28,8 @@ module Codegen
       @in_core = in_core
       pagers = File.join(File.dirname(api_path), 'paginators-1.json')
       @paginators = File.exist?(pagers) ? JSON.parse(File.read(pagers))['pagination'] : {}
+      waiters = File.join(File.dirname(api_path), 'waiters-2.json')
+      @waiters = File.exist?(waiters) ? JSON.parse(File.read(waiters))['waiters'] : {}
       unknown = (operation_names || []) - @api['operations'].keys
       raise "not in the model: #{unknown.join(', ')}" unless unknown.empty?
     end
@@ -36,7 +38,7 @@ module Codegen
 
     # name => file contents, paths relative to the package root.
     def files(prefix)
-      {
+      out = {
         "#{prefix}.rb" => entry_file(prefix),
         "#{prefix}/types.rb" => types_file,
         "#{prefix}/errors.rb" => errors_file,
@@ -45,6 +47,8 @@ module Codegen
         "#{prefix}/stubs.rb" => stubs_file,
         "#{prefix}/client.rb" => client_file,
       }
+      out["#{prefix}/waiters.rb"] = waiters_file unless waiters.empty?
+      out
     end
 
     # Every [shape name, ruby member names in model order] the generator
@@ -135,7 +139,9 @@ module Codegen
     # ---- entry ----------------------------------------------------------
 
     def entry_file(prefix)
-      req = %w[types errors serializers parsers stubs client].map { |f| "#{prefix}/#{f}" }
+      parts = %w[types errors serializers parsers stubs client]
+      parts << 'waiters' unless waiters.empty?
+      req = parts.map { |f| "#{prefix}/#{f}" }
       header([@in_core ? 'aws-sdk-core/runtime' : 'aws-sdk-core'] + req) +
         "module Aws\n  module #{module_name}\n    API_VERSION = #{metadata['apiVersion'].inspect}\n  end\nend\n"
     end
@@ -385,9 +391,75 @@ module Codegen
       body << "  # The input member names of an operation, as the gem reads them from\n"
       body << "  # its API model (Client.api.operation(name).input.shape.member_names).\n"
       body << "  def self.input_members(operation)\n    case operation\n#{indent(inputs, 4)}    else []\n    end\n  end\n\n"
+      body << indent(waiter_methods, 2) << "\n" unless waiters.empty?
       body << indent(methods, 2) << "end\n\n"
       body << "module Responses\n#{indent(responses, 2)}end\n"
       header + wrap(indent(body, 4))
+    end
+
+    # ---- waiters --------------------------------------------------------
+
+    # The model's waiters (waiters-2.json next to it) whose operation is
+    # generated, by name.
+    def waiters
+      @waiters.select { |_, w| operations.key?(w['operation']) }.sort.to_h
+    end
+
+    # The gem's Client#wait_until and #waiter_names.
+    def waiter_methods
+      names = waiters.keys.map { |n| ":#{Underscore.underscore(n)}" }.join(', ')
+      lookup = waiters.keys.map do |n|
+        "when :#{Underscore.underscore(n)} then Waiters::#{n}.new(options.merge(client: self))\n"
+      end.join
+      out = +"def wait_until(waiter_name, params = {}, options = {})\n"
+      out << "  w =\n    case waiter_name\n#{indent(lookup, 4)}"
+      out << "    else raise Aws::Waiters::Errors::NoSuchWaiterError.new(waiter_name, waiter_names)\n    end\n"
+      out << "  yield(w.waiter) if block_given?\n  w.wait(params)\nend\n\n"
+      out << "def waiter_names = [#{names}]\n"
+    end
+
+    def waiters_file
+      classes = waiters.map { |name, w| waiter_class(name, w) }.join("\n")
+      header + wrap(indent("module Waiters\n#{indent(classes, 2)}end\n", 4))
+    end
+
+    # A waiter as the gem's generated class, its Poller written out: each
+    # acceptor of waiters-2.json in order, for a response and for an error.
+    # Only "path" on a top-level member and "error" acceptors are generated
+    # (all of SSM's); any other is refused.
+    def waiter_class(name, w)
+      on_data = +''
+      on_error = +''
+      w['acceptors'].each do |a|
+        state = ":#{a['state']}"
+        case a['matcher']
+        when 'path'
+          raise "#{name}: only a path on a top-level member is generated" unless a['argument'].match?(/\A\w+\z/)
+
+          on_data << "  return [#{state}, response] if response.data.#{Underscore.underscore(a['argument'])} == #{a['expected'].inspect}\n"
+        when 'error'
+          case a['expected']
+          when false, 'false' then on_data << "  return [#{state}, response]\n"
+          when true, 'true' then on_error << "  return [#{state}, response]\n"
+          else on_error << "  return [#{state}, response] if e.code == #{a['expected'].delete('.').inspect}\n"
+          end
+        else raise "#{name}: the #{a['matcher']} matcher is not generated"
+        end
+      end
+      op = op_method(w['operation'])
+      out = +"class #{name}\n"
+      out << "  def initialize(options)\n    @client = options[:client]\n"
+      out << "    @waiter = Aws::Waiters::Waiter.new({ max_attempts: #{w['maxAttempts']}, delay: #{w['delay']} }.merge(options))\n  end\n\n"
+      out << "  attr_reader :waiter\n\n"
+      out << "  def wait(params = {})\n    @waiter.wait { poll(params) }\n  end\n\n"
+      out << "  private\n\n"
+      out << "  # One attempt: [state, response], the response holding the error when\n"
+      out << "  # the call raised, as the gem's Poller sees it.\n"
+      out << "  def poll(params)\n    response = @client.#{op}(params)\n#{indent(on_data, 2)}    [:retry, response]\n"
+      out << "  rescue Aws::Errors::ServiceError => e\n    response = Seahorse::Client::Response.new(nil, e.context)\n    response.error = e\n"
+      out << "#{indent(on_error, 2)}    [:error, response]\n"
+      out << "  rescue Seahorse::Client::NetworkingError => e\n    response = Seahorse::Client::Response.new(nil, nil)\n    response.error = e\n    [:error, response]\n"
+      out << "  end\nend\n"
     end
 
     # Extra Client constants a protocol needs, one "  NAME = value\n" each.
