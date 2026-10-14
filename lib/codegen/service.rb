@@ -401,7 +401,8 @@ module Codegen
       out << "  if stub.nil? && stub_responses?\n    data = Stubs.#{m}(nil)\n"
       out << "  elsif stub && stub.data?\n    data = Stubs.#{m}(stub.data)\n"
       out << "  else\n#{indent(transport(name, op), 4)}  end\n"
-      out << "  Responses::#{name}.new(data, request_context(body))\n"
+      paging = page_token(name) ? ', self, params' : ''
+      out << "  Responses::#{name}.new(data, request_context(body)#{paging})\n"
       out << "rescue Aws::Runtime::ErrorResponse => e\n"
       data = error_data? ? ", Parsers.#{m}_error_data(e.code, e.body)" : ''
       out << "  raise Errors.error(e.code, e.context, e.message#{data})\nend\n"
@@ -419,7 +420,35 @@ module Codegen
     def response_class(name, op)
       output = op.dig('output', 'shape')
       readers = output ? members(shape(output)).map { |m| "def #{m[:ruby]} = data.#{m[:ruby]}\n" }.join : ''
-      "class #{name} < Seahorse::Client::Response\n#{indent(readers, 2)}end\n"
+      "class #{name} < Seahorse::Client::Response\n#{indent(readers + paging_methods(name), 2)}end\n"
+    end
+
+    # The [output member, input member] of an operation's paginator, or nil
+    # without one. Only a paginator of one top-level token and no
+    # more_results is generated (all of SSM's); any other is refused.
+    def page_token(op_name)
+      pager = @paginators[op_name]
+      return nil if pager.nil?
+
+      inputs = Array(pager['input_token'])
+      outputs = Array(pager['output_token'])
+      simple = inputs.size == 1 && outputs.size == 1 && pager['more_results'].nil? &&
+               outputs[0].match?(/\A\w+\z/) && inputs[0].match?(/\A\w+\z/)
+      raise "#{op_name}: only a paginator of one top-level token is generated" unless simple
+
+      [Underscore.underscore(outputs[0]), Underscore.underscore(inputs[0])]
+    end
+
+    # The paginated response's last_page? and next page, as the gem's
+    # PageableResponse with its Pager.
+    def paging_methods(op_name)
+      output, input = page_token(op_name)
+      return '' if output.nil?
+
+      "\ndef last_page? = !Aws::Runtime::Paging.truncated?(data.#{output}, Aws::Runtime::Query.member(@params, :#{input}))\n\n" \
+        "private\n\n" \
+        "def next_response(params)\n" \
+        "  @client.#{op_method(op_name)}(Aws::Runtime::Paging.next_params(@params, :#{input}, data.#{output}, params))\nend\n"
     end
   end
 end

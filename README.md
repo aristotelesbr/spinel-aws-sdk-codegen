@@ -30,7 +30,9 @@ It writes `PREFIX.rb` and `PREFIX/{types,errors,serializers,parsers,stubs,client
 under `OUT_DIR`. The output is deterministic: the same model gives the same
 files. `--operations` keeps only those operations, the structures they reach
 and their errors. A `paginators-1.json` next to the model clears the paging
-tokens of the default stubs, as the gem does.
+tokens of the default stubs, as the gem does, and gives a paginated
+operation's response `last_page?` and its next page (a paginator of one
+top-level token; any other is refused).
 
 `--check-against-gem` first loads the real gem (aws-sdk-core for STS,
 aws-sdk-PREFIX otherwise) and stops unless
